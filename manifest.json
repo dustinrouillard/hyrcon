@@ -1,0 +1,18 @@
+{
+  "Group": "dstn.to",
+  "Name": "HyRCON",
+  "Version": "1.0.0",
+  "Description": "HyRCON Server plugin for Hytale",
+  "Authors": [
+    {
+      "Name": "Dustin Rouillard"
+    }
+  ],
+  "Website": "https://discord.hytale-modding.info",
+  "ServerVersion": "*",
+  "Dependencies": {},
+  "OptionalDependencies": {},
+  "DisabledByDefault": false,
+  "IncludesAssetPack": true,
+  "Main": "to.dstn.hytale.hyrcon.HyRCON"
+}

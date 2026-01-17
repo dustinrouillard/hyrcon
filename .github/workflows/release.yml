@@ -1,0 +1,95 @@
+name: Release Build
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build-and-release:
+    name: Build and Upload Release Artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set short commit SHA
+        run: echo "COMMIT_SHA_SHORT=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Download Hytale server jar
+        env:
+          HYTALE_SERVER_JAR_URL: ${{ secrets.HYTALE_SERVER_JAR_URL }}
+        run: |
+          if [ -z "$HYTALE_SERVER_JAR_URL" ]; then
+            echo "HYTALE_SERVER_JAR_URL secret is not set" >&2
+            exit 1
+          fi
+          mkdir -p ${{ github.workspace }}/server-libs
+          curl -fSL "$HYTALE_SERVER_JAR_URL" -o ${{ github.workspace }}/server-libs/hytale-server.jar
+
+      - name: Create Gradle init script
+        run: |
+          cat <<'EOF' > "$GITHUB_WORKSPACE/ci-gradle-init.gradle"
+          import org.gradle.api.plugins.JavaPlugin
+          import org.gradle.api.tasks.compile.JavaCompile
+
+          def serverJar = System.getenv("HYRCON_HYTALE_SERVER_JAR")
+          if (serverJar == null || serverJar.trim().isEmpty()) {
+              throw new GradleException("HYRCON_HYTALE_SERVER_JAR environment variable is not set")
+          }
+          def serverJarFile = file(serverJar)
+          if (!serverJarFile.exists()) {
+              throw new GradleException("HYRCON_HYTALE_SERVER_JAR file does not exist: ${serverJarFile}")
+          }
+
+          allprojects { project ->
+              project.plugins.withType(JavaPlugin) {
+                  def serverFiles = project.files(serverJarFile)
+                  project.afterEvaluate {
+                      if (project.configurations.findByName("compileOnly") != null) {
+                          project.dependencies.add("compileOnly", serverFiles)
+                      }
+                      project.tasks.withType(JavaCompile).configureEach { compileTask ->
+                          compileTask.classpath += serverFiles
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Export Hytale server jar path
+        run: echo "HYRCON_HYTALE_SERVER_JAR=${GITHUB_WORKSPACE}/server-libs/hytale-server.jar" >> "$GITHUB_ENV"
+
+      - name: Build with Gradle
+        run: ./gradlew --no-daemon --init-script "$GITHUB_WORKSPACE/ci-gradle-init.gradle" clean build
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+      - name: Archive build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-jars
+          path: build/libs/*.jar
+          if-no-files-found: error
+
+      - name: Upload jars to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/libs/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
