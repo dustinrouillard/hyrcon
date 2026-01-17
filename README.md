@@ -16,4 +16,4 @@ We've created a simple Rust client that can be used to connect to the HyRCON ser
 
 ## Running your server in Docker
 
-If you're looking for an easy way to run your server in Docker, I also created a container image that handles OAuth and automatic mod downloads which includes this mod for its in-built HyRCON capabilities, you can find that over at [dustinrouillard/hytale-docker](https://github.com/dustinrouillard/hytale-docker)
+If you're looking for an easy way to run your server in Docker, I also created a container image that handles OAuth and automatic mod downloads which includes this mod for its in-built RCON capabilities, you can find that over at [dustinrouillard/hytale-docker](https://github.com/dustinrouillard/hytale-docker)
