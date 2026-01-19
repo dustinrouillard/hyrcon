@@ -1,5 +1,12 @@
 package to.dstn.hytale.hyrcon;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -12,6 +19,9 @@ public final class HyRconConfiguration {
     public static final String ENV_HOST = "HYRCON_HOST";
     public static final String ENV_PORT = "HYRCON_PORT";
     public static final String ENV_PASSWORD = "HYRCON_PASSWORD";
+
+    public static final String CONFIG_FILE_NAME = "config.yml";
+    public static final String CONFIG_EXAMPLE_FILE_NAME = "config.yml.example";
 
     private static final String LEGACY_ENV_ENABLED = "RCON_ENABLED";
     private static final String LEGACY_ENV_BIND = "RCON_BIND";
@@ -26,7 +36,7 @@ public final class HyRconConfiguration {
     private static final String PORT_ENV_NAMES =
         ENV_PORT + "/" + LEGACY_ENV_PORT;
 
-    public static final boolean DEFAULT_ENABLED = true;
+    public static final boolean DEFAULT_ENABLED = false;
     public static final String DEFAULT_HOST = "0.0.0.0";
     public static final int DEFAULT_PORT = 5522;
 
@@ -45,6 +55,27 @@ public final class HyRconConfiguration {
         this.host = Objects.requireNonNull(host, "host");
         this.port = validatePort(port);
         this.password = Objects.requireNonNull(password, "password");
+    }
+
+    public static HyRconConfiguration load(Path dataDirectory) {
+        return load(dataDirectory, System.getenv());
+    }
+
+    public static HyRconConfiguration load(
+        Path dataDirectory,
+        Map<String, String> environment
+    ) {
+        Objects.requireNonNull(dataDirectory, "dataDirectory");
+        Objects.requireNonNull(environment, "environment");
+
+        Map<String, String> merged = new HashMap<>(environment);
+        Map<String, String> overrides = readOverrides(dataDirectory);
+
+        if (!overrides.isEmpty()) {
+            merged.putAll(overrides);
+        }
+
+        return fromEnvironment(merged);
     }
 
     public static HyRconConfiguration fromEnvironment() {
@@ -115,6 +146,170 @@ public final class HyRconConfiguration {
             password.map(HyRconConfiguration::mask).orElse("<none>") +
             '}'
         );
+    }
+
+    private static Map<String, String> readOverrides(Path dataDirectory) {
+        ensureExampleConfiguration(dataDirectory);
+
+        Path configPath = dataDirectory.resolve(CONFIG_FILE_NAME);
+        if (!Files.exists(configPath) || Files.isDirectory(configPath)) {
+            return Collections.emptyMap();
+        }
+
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(configPath, StandardCharsets.UTF_8);
+        } catch (IOException ex) {
+            throw new IllegalStateException(
+                "Failed to read HyRCON configuration file: " + configPath,
+                ex
+            );
+        }
+
+        Map<String, String> overrides = new HashMap<>();
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+
+            int separator = line.indexOf(':');
+            if (separator < 0) {
+                continue;
+            }
+
+            String key = line.substring(0, separator).trim();
+            String value = line.substring(separator + 1).trim();
+
+            value = stripInlineComment(value);
+            value = stripQuotes(value).trim();
+
+            if (value.equalsIgnoreCase("null") || value.equals("~")) {
+                value = "";
+            }
+
+            switch (key.toLowerCase(Locale.ROOT)) {
+                case "enabled":
+                    overrides.put(ENV_ENABLED, value);
+                    overrides.put(LEGACY_ENV_ENABLED, value);
+                    break;
+                case "bind":
+                    overrides.put(ENV_BIND, value);
+                    overrides.put(LEGACY_ENV_BIND, value);
+                    break;
+                case "host":
+                    overrides.put(ENV_HOST, value);
+                    overrides.put(LEGACY_ENV_HOST, value);
+                    break;
+                case "port":
+                    overrides.put(ENV_PORT, value);
+                    overrides.put(LEGACY_ENV_PORT, value);
+                    break;
+                case "password":
+                    overrides.put(ENV_PASSWORD, value);
+                    overrides.put(LEGACY_ENV_PASSWORD, value);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return overrides;
+    }
+
+    private static void ensureExampleConfiguration(Path dataDirectory) {
+        try {
+            Files.createDirectories(dataDirectory);
+        } catch (IOException ex) {
+            throw new IllegalStateException(
+                "Failed to create HyRCON data directory: " + dataDirectory,
+                ex
+            );
+        }
+
+        Path examplePath = dataDirectory.resolve(CONFIG_EXAMPLE_FILE_NAME);
+        if (Files.exists(examplePath)) {
+            return;
+        }
+
+        String newline = System.lineSeparator();
+        StringBuilder builder = new StringBuilder();
+        builder.append("# HyRCON configuration example").append(newline);
+        builder
+            .append(
+                "# Copy this file to " +
+                    CONFIG_FILE_NAME +
+                    " to override environment variables."
+            )
+            .append(newline);
+        builder
+            .append("# Set to false to disable the RCON listener.")
+            .append(newline);
+        builder.append("enabled: ").append(DEFAULT_ENABLED).append(newline);
+        builder
+            .append("# Host interface others connect through.")
+            .append(newline);
+        builder
+            .append("host: \"")
+            .append(DEFAULT_HOST)
+            .append('\"')
+            .append(newline);
+        builder
+            .append("# Network port that the listener will bind to.")
+            .append(newline);
+        builder.append("port: ").append(DEFAULT_PORT).append(newline);
+        builder
+            .append(
+                "# Optional password; leave blank for no password requirement."
+            )
+            .append(newline);
+        builder.append("password: \"\"").append(newline);
+
+        try {
+            Files.writeString(
+                examplePath,
+                builder.toString(),
+                StandardCharsets.UTF_8
+            );
+        } catch (IOException ex) {
+            throw new IllegalStateException(
+                "Failed to write HyRCON example configuration file: " +
+                    examplePath,
+                ex
+            );
+        }
+    }
+
+    private static String stripInlineComment(String value) {
+        boolean inSingleQuotes = false;
+        boolean inDoubleQuotes = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\'' && !inDoubleQuotes) {
+                inSingleQuotes = !inSingleQuotes;
+            } else if (c == '\"' && !inSingleQuotes) {
+                inDoubleQuotes = !inDoubleQuotes;
+            } else if (c == '#' && !inSingleQuotes && !inDoubleQuotes) {
+                if (i == 0 || Character.isWhitespace(value.charAt(i - 1))) {
+                    return value.substring(0, i).trim();
+                }
+            }
+        }
+        return value.trim();
+    }
+
+    private static String stripQuotes(String value) {
+        if (value.length() >= 2) {
+            char first = value.charAt(0);
+            char last = value.charAt(value.length() - 1);
+            if (
+                (first == '\"' && last == '\"') ||
+                (first == '\'' && last == '\'')
+            ) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
     }
 
     private static boolean parseEnabled(String rawValue) {
