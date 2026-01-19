@@ -4,7 +4,16 @@ plugins {
 }
 
 group = "to.dstn.hytale"
-version = "1.0.0"
+val envTagVersion = listOf("CI_COMMIT_TAG", "GITHUB_REF_NAME", "GIT_TAG", "TAG_NAME")
+    .asSequence()
+    .mapNotNull { System.getenv(it)?.takeIf(String::isNotBlank) }
+    .map { it.removePrefix("refs/tags/") }
+    .map { it.removePrefix("v") }
+    .firstOrNull()
+val envVersion = System.getenv("HYRCON_VERSION")
+    ?.takeIf(String::isNotBlank)
+    ?.removePrefix("v")
+version = envVersion ?: envTagVersion ?: "1.0.0"
 val javaVersion = 25
 
 repositories {
