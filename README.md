@@ -12,6 +12,7 @@ This plugin can also read configuration elements directly from the process envir
 - `HYRCON_BIND` / `RCON_BIND`: Optional combined bind address in `host:port` (or `[ipv6]:port`) form. Defaults to `0.0.0.0:5522`.
 - `HYRCON_HOST` / `RCON_HOST`: Host fallback when no bind address is set. Defaults to `0.0.0.0`.
 - `HYRCON_PORT` / `RCON_PORT`: Port fallback when no bind address is set. Defaults to `5522`.
+- `HYRCON_PROTOCOL` / `RCON_PROTOCOL`: Chooses the remote console protocol to expose. Use `hyrcon` for the legacy line-based protocol or `source` for Source-compatible RCON. Defaults to `hyrcon` for now.
 - `HYRCON_PASSWORD` / `RCON_PASSWORD`: Password required for client authentication. Defaults to `changeme`.
 
 ## Connecting to the HyRCON Server

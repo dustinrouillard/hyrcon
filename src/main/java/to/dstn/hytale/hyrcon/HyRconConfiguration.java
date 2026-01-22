@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -19,6 +21,7 @@ public final class HyRconConfiguration {
     public static final String ENV_HOST = "HYRCON_HOST";
     public static final String ENV_PORT = "HYRCON_PORT";
     public static final String ENV_PASSWORD = "HYRCON_PASSWORD";
+    public static final String ENV_PROTOCOL = "HYRCON_PROTOCOL";
 
     public static final String CONFIG_FILE_NAME = "config.yml";
     public static final String CONFIG_EXAMPLE_FILE_NAME = "config.yml.example";
@@ -28,6 +31,7 @@ public final class HyRconConfiguration {
     private static final String LEGACY_ENV_HOST = "RCON_HOST";
     private static final String LEGACY_ENV_PORT = "RCON_PORT";
     private static final String LEGACY_ENV_PASSWORD = "RCON_PASSWORD";
+    private static final String LEGACY_ENV_PROTOCOL = "RCON_PROTOCOL";
 
     private static final String ENABLED_ENV_NAMES =
         ENV_ENABLED + "/" + LEGACY_ENV_ENABLED;
@@ -35,26 +39,32 @@ public final class HyRconConfiguration {
         ENV_BIND + "/" + LEGACY_ENV_BIND;
     private static final String PORT_ENV_NAMES =
         ENV_PORT + "/" + LEGACY_ENV_PORT;
+    private static final String PROTOCOL_ENV_NAMES =
+        ENV_PROTOCOL + "/" + LEGACY_ENV_PROTOCOL;
 
     public static final boolean DEFAULT_ENABLED = false;
     public static final String DEFAULT_HOST = "0.0.0.0";
     public static final int DEFAULT_PORT = 5522;
+    public static final HyRconProtocol DEFAULT_PROTOCOL = HyRconProtocol.HYRCON;
 
     private final boolean enabled;
     private final String host;
     private final int port;
     private final Optional<String> password;
+    private final HyRconProtocol protocol;
 
     private HyRconConfiguration(
         boolean enabled,
         String host,
         int port,
-        Optional<String> password
+        Optional<String> password,
+        HyRconProtocol protocol
     ) {
         this.enabled = enabled;
         this.host = Objects.requireNonNull(host, "host");
         this.port = validatePort(port);
         this.password = Objects.requireNonNull(password, "password");
+        this.protocol = Objects.requireNonNull(protocol, "protocol");
     }
 
     public static HyRconConfiguration load(Path dataDirectory) {
@@ -93,6 +103,9 @@ public final class HyRconConfiguration {
         BindEndpoint bindEndpoint = parseBind(
             firstValue(environment, ENV_BIND, LEGACY_ENV_BIND)
         );
+        HyRconProtocol protocol = parseProtocol(
+            firstValue(environment, ENV_PROTOCOL, LEGACY_ENV_PROTOCOL)
+        );
         String host = bindEndpoint
             .host()
             .map(HyRconConfiguration::sanitizeHost)
@@ -102,13 +115,16 @@ public final class HyRconConfiguration {
         int port = bindEndpoint
             .port()
             .orElseGet(() ->
-                parsePort(firstValue(environment, ENV_PORT, LEGACY_ENV_PORT))
+                parsePort(
+                    firstValue(environment, ENV_PORT, LEGACY_ENV_PORT),
+                    protocol.defaultPort()
+                )
             );
         Optional<String> password = sanitizePassword(
             firstValue(environment, ENV_PASSWORD, LEGACY_ENV_PASSWORD)
         );
 
-        return new HyRconConfiguration(enabled, host, port, password);
+        return new HyRconConfiguration(enabled, host, port, password, protocol);
     }
 
     public boolean enabled() {
@@ -127,6 +143,10 @@ public final class HyRconConfiguration {
         return password;
     }
 
+    public HyRconProtocol protocol() {
+        return protocol;
+    }
+
     public boolean isPasswordRequired() {
         return password.isPresent();
     }
@@ -142,6 +162,8 @@ public final class HyRconConfiguration {
             '\'' +
             ", port=" +
             port +
+            ", protocol=" +
+            protocol +
             ", password=" +
             password.map(HyRconConfiguration::mask).orElse("<none>") +
             '}'
@@ -209,6 +231,10 @@ public final class HyRconConfiguration {
                     overrides.put(ENV_PASSWORD, value);
                     overrides.put(LEGACY_ENV_PASSWORD, value);
                     break;
+                case "protocol":
+                    overrides.put(ENV_PROTOCOL, value);
+                    overrides.put(LEGACY_ENV_PROTOCOL, value);
+                    break;
                 default:
                     break;
             }
@@ -234,8 +260,9 @@ public final class HyRconConfiguration {
 
         String newline = System.lineSeparator();
         StringBuilder builder = new StringBuilder();
-        builder.append("# HyRCON configuration example").append(newline);
         builder
+            .append("# HyRCON configuration example")
+            .append(newline)
             .append(
                 "# Copy this file to " +
                     CONFIG_FILE_NAME +
@@ -259,22 +286,52 @@ public final class HyRconConfiguration {
             .append(newline);
         builder.append("port: ").append(DEFAULT_PORT).append(newline);
         builder
+            .append("# Protocol to use: hyrcon (legacy) or source.")
+            .append(newline);
+        builder
+            .append("protocol: \"")
+            .append(DEFAULT_PROTOCOL.configToken())
+            .append('"')
+            .append(newline);
+        builder
             .append(
                 "# Optional password; leave blank for no password requirement."
             )
             .append(newline);
         builder.append("password: \"\"").append(newline);
 
+        String templateBody = builder.toString();
+        String versionLine =
+            "# configuration version: " +
+            computeTemplateVersion(templateBody) +
+            newline;
+        String content = versionLine + templateBody;
+
         try {
-            Files.writeString(
-                examplePath,
-                builder.toString(),
-                StandardCharsets.UTF_8
-            );
+            Files.writeString(examplePath, content, StandardCharsets.UTF_8);
         } catch (IOException ex) {
             throw new IllegalStateException(
                 "Failed to write HyRCON example configuration file: " +
                     examplePath,
+                ex
+            );
+        }
+    }
+
+    private static String computeTemplateVersion(String content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(
+                content.getBytes(StandardCharsets.UTF_8)
+            );
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(String.format("%02x", b));
+            }
+            return "sha256:" + hex.substring(0, 12);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(
+                "Failed to compute HyRCON config template hash",
                 ex
             );
         }
@@ -353,8 +410,12 @@ public final class HyRconConfiguration {
     }
 
     private static int parsePort(String rawValue) {
+        return parsePort(rawValue, DEFAULT_PORT);
+    }
+
+    private static int parsePort(String rawValue, int defaultPort) {
         if (rawValue == null || rawValue.trim().isEmpty()) {
-            return DEFAULT_PORT;
+            return defaultPort;
         }
 
         return parsePortValue(rawValue.trim(), PORT_ENV_NAMES);
@@ -388,6 +449,24 @@ public final class HyRconConfiguration {
         }
 
         return Optional.of(trimmed);
+    }
+
+    private static HyRconProtocol parseProtocol(String rawValue) {
+        if (rawValue == null || rawValue.trim().isEmpty()) {
+            return DEFAULT_PROTOCOL;
+        }
+
+        try {
+            return HyRconProtocol.fromToken(rawValue);
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException(
+                "Unsupported protocol value for " +
+                    PROTOCOL_ENV_NAMES +
+                    ": " +
+                    rawValue,
+                ex
+            );
+        }
     }
 
     private static String firstValue(

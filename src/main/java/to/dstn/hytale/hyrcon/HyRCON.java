@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -48,10 +50,11 @@ public final class HyRCON extends JavaPlugin {
         }
 
         LOGGER.atInfo().log(
-            "HyRCON configuration: enabled=%s host=%s port=%d password=%s",
+            "HyRCON configuration: enabled=%s host=%s port=%d protocol=%s password=%s",
             configuration.enabled(),
             configuration.host(),
             configuration.port(),
+            configuration.protocol().configToken(),
             configuration.isPasswordRequired() ? "required" : "optional"
         );
 
@@ -242,6 +245,14 @@ public final class HyRCON extends JavaPlugin {
                             value
                         );
                         break;
+                    case "protocol":
+                        putOverride(
+                            overrides,
+                            HyRconConfiguration.ENV_PROTOCOL,
+                            ConfigFileConstants.LEGACY_ENV_PROTOCOL,
+                            value
+                        );
+                        break;
                     default:
                         break;
                 }
@@ -341,12 +352,18 @@ public final class HyRCON extends JavaPlugin {
                 .append(newline)
                 .append("host: \"")
                 .append(HyRconConfiguration.DEFAULT_HOST)
-                .append('"')
+                .append('\"')
                 .append(newline)
                 .append("# Network port that the listener will bind to.")
                 .append(newline)
                 .append("port: ")
                 .append(HyRconConfiguration.DEFAULT_PORT)
+                .append(newline)
+                .append("# Protocol to use: hyrcon (legacy) or source.")
+                .append(newline)
+                .append("protocol: \"")
+                .append(HyRconConfiguration.DEFAULT_PROTOCOL.configToken())
+                .append('\"')
                 .append(newline)
                 .append(
                     "# Optional password; leave blank for no password requirement."
@@ -359,16 +376,39 @@ public final class HyRCON extends JavaPlugin {
                 .append("password: \"hytale\"")
                 .append(newline);
 
+            String templateBody = builder.toString();
+            String versionLine =
+                "# configuration version: " +
+                computeTemplateVersion(templateBody) +
+                newline;
+            String content = versionLine + templateBody;
+
             try {
-                Files.writeString(
-                    examplePath,
-                    builder.toString(),
-                    StandardCharsets.UTF_8
-                );
+                Files.writeString(examplePath, content, StandardCharsets.UTF_8);
             } catch (IOException ex) {
                 throw new IllegalStateException(
                     "Failed to write HyRCON example configuration file: " +
                         examplePath,
+                    ex
+                );
+            }
+        }
+
+        private static String computeTemplateVersion(String content) {
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                byte[] hash = digest.digest(
+                    content.getBytes(StandardCharsets.UTF_8)
+                );
+                StringBuilder hex = new StringBuilder(hash.length * 2);
+                for (byte b : hash) {
+                    hex.append(String.format("%02x", b));
+                }
+                String fullHash = hex.toString();
+                return "sha256:" + fullHash.substring(0, 12);
+            } catch (NoSuchAlgorithmException ex) {
+                throw new IllegalStateException(
+                    "Failed to compute HyRCON config template hash",
                     ex
                 );
             }
@@ -381,6 +421,7 @@ public final class HyRCON extends JavaPlugin {
             private static final String LEGACY_ENV_HOST = "RCON_HOST";
             private static final String LEGACY_ENV_PORT = "RCON_PORT";
             private static final String LEGACY_ENV_PASSWORD = "RCON_PASSWORD";
+            private static final String LEGACY_ENV_PROTOCOL = "RCON_PROTOCOL";
 
             private ConfigFileConstants() {}
         }

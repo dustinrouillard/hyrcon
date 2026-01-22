@@ -1,16 +1,24 @@
 package to.dstn.hytale.hyrcon;
 
 import com.hypixel.hytale.logger.HytaleLogger;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -24,10 +32,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class HyRconServer implements AutoCloseable {
 
     private static final HytaleLogger LOGGER = HytaleLogger.forEnclosingClass();
+    private static final Charset SOURCE_CHARSET = StandardCharsets.ISO_8859_1;
+    private static final int SOURCE_MAX_PAYLOAD = 4096 - 2;
+    private static final byte[] EMPTY_BYTES = new byte[0];
 
     private final HyRconConfiguration configuration;
     private final CommandExecutor commandExecutor;
     private final Optional<String> requiredPassword;
+    private final HyRconProtocol protocol;
     private final ExecutorService clientExecutor;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -48,6 +60,7 @@ public final class HyRconServer implements AutoCloseable {
             "commandExecutor"
         );
         this.requiredPassword = this.configuration.password();
+        this.protocol = this.configuration.protocol();
         this.clientExecutor = createClientExecutor();
     }
 
@@ -94,9 +107,10 @@ public final class HyRconServer implements AutoCloseable {
         acceptThread.start();
 
         LOGGER.atInfo().log(
-            "HyRCON server listening on %s:%d (password %s)",
+            "HyRCON server listening on %s:%d using %s protocol (password %s)",
             configuration.host(),
             configuration.port(),
+            protocol.name(),
             requiredPassword.isPresent() ? "required" : "disabled"
         );
     }
@@ -189,10 +203,43 @@ public final class HyRconServer implements AutoCloseable {
 
     private void handleClient(Socket socket) {
         String remote = safeRemoteAddress(socket);
-        LOGGER.atInfo().log("HyRCON client connected: %s", remote);
+        LOGGER.atInfo().log(
+            "HyRCON[%s] client connected: %s",
+            protocol.configToken(),
+            remote
+        );
 
+        try (socket) {
+            if (!running.get()) {
+                return;
+            }
+            switch (protocol) {
+                case HYRCON -> handleLegacyClient(socket);
+                case SOURCE_RCON -> handleSourceClient(socket);
+                default -> throw new IllegalStateException(
+                    "Unhandled protocol: " + protocol
+                );
+            }
+        } catch (IOException ex) {
+            if (running.get()) {
+                LOGGER.atInfo().log(
+                    "HyRCON[%s] client %s disconnected due to I/O error: %s",
+                    protocol.configToken(),
+                    remote,
+                    ex.toString()
+                );
+            }
+        } finally {
+            LOGGER.atInfo().log(
+                "HyRCON[%s] client disconnected: %s",
+                protocol.configToken(),
+                remote
+            );
+        }
+    }
+
+    private void handleLegacyClient(Socket socket) throws IOException {
         try (
-            socket;
             BufferedReader reader = new BufferedReader(
                 new InputStreamReader(
                     socket.getInputStream(),
@@ -206,48 +253,156 @@ public final class HyRconServer implements AutoCloseable {
                 )
             )
         ) {
-            greetClient(writer);
+            greetLegacyClient(writer);
 
             boolean authenticated = !requiredPassword.isPresent();
             String line;
 
-            while ((line = reader.readLine()) != null) {
+            while (running.get() && (line = reader.readLine()) != null) {
                 String command = line.trim();
                 if (command.isEmpty()) {
                     continue;
                 }
 
                 if (!authenticated) {
-                    authenticated = processAuthentication(command, writer);
+                    authenticated = processLegacyAuthentication(
+                        command,
+                        writer
+                    );
                     continue;
                 }
 
                 if (isTerminateCommand(command)) {
-                    sendAndFlush(writer, "BYE");
+                    sendLegacyAndFlush(writer, "BYE");
                     break;
                 }
 
                 if ("PING".equalsIgnoreCase(command)) {
-                    sendResponse(writer, CommandResponse.success("PONG"));
+                    sendLegacyResponse(
+                        writer,
+                        CommandResponse.success("PONG"),
+                        command
+                    );
                     continue;
                 }
 
-                executeCommand(command, writer);
+                executeLegacyCommand(command, writer);
             }
-        } catch (IOException ex) {
-            if (running.get()) {
-                LOGGER.atInfo().log(
-                    "HyRCON client %s disconnected due to I/O error: %s",
-                    remote,
-                    ex.toString()
-                );
-            }
-        } finally {
-            LOGGER.atInfo().log("HyRCON client disconnected: %s", remote);
         }
     }
 
-    private void greetClient(BufferedWriter writer) throws IOException {
+    private void handleSourceClient(Socket socket) throws IOException {
+        try (
+            InputStream input = new BufferedInputStream(
+                socket.getInputStream()
+            );
+            OutputStream output = new BufferedOutputStream(
+                socket.getOutputStream()
+            )
+        ) {
+            boolean authenticated = !requiredPassword.isPresent();
+
+            while (running.get()) {
+                SourceRconPacket packet = readSourcePacket(input);
+                if (packet == null) {
+                    break;
+                }
+
+                switch (packet.type()) {
+                    case 3 -> {
+                        if (authenticated) {
+                            // Already authenticated: acknowledge immediately.
+                            writeSourcePacket(
+                                output,
+                                packet.requestId(),
+                                2,
+                                EMPTY_BYTES,
+                                0,
+                                0
+                            );
+                            output.flush();
+                            continue;
+                        }
+                        boolean success = requiredPassword
+                            .map(packet.payload()::equals)
+                            .orElse(true);
+                        if (success) {
+                            authenticated = true;
+                            writeSourcePacket(
+                                output,
+                                packet.requestId(),
+                                2,
+                                EMPTY_BYTES,
+                                0,
+                                0
+                            );
+                            output.flush();
+                        } else {
+                            LOGGER.atInfo().log(
+                                "HyRCON[%s] authentication failed",
+                                protocol.configToken()
+                            );
+                            writeSourcePacket(output, -1, 2, EMPTY_BYTES, 0, 0);
+                            output.flush();
+                        }
+                    }
+                    case 2 -> {
+                        if (!authenticated) {
+                            writeSourcePacket(output, -1, 2, EMPTY_BYTES, 0, 0);
+                            output.flush();
+                            continue;
+                        }
+                        String rawCommand =
+                            packet.payload() == null ? "" : packet.payload();
+                        String command = rawCommand.trim();
+                        if (command.isEmpty()) {
+                            CommandResponse response = CommandResponse.success(
+                                List.of()
+                            );
+                            sendSourceResponse(
+                                output,
+                                packet.requestId(),
+                                command,
+                                response
+                            );
+                            continue;
+                        }
+                        CommandResponse response = executeCommand(command);
+                        sendSourceResponse(
+                            output,
+                            packet.requestId(),
+                            command,
+                            response
+                        );
+                    }
+                    default -> {
+                        String message =
+                            "Unknown request " +
+                            Integer.toHexString(packet.type());
+                        writeSourcePacket(
+                            output,
+                            packet.requestId(),
+                            0,
+                            message.getBytes(SOURCE_CHARSET),
+                            0,
+                            message.getBytes(SOURCE_CHARSET).length
+                        );
+                        writeSourcePacket(
+                            output,
+                            packet.requestId(),
+                            0,
+                            EMPTY_BYTES,
+                            0,
+                            0
+                        );
+                        output.flush();
+                    }
+                }
+            }
+        }
+    }
+
+    private void greetLegacyClient(BufferedWriter writer) throws IOException {
         writer.write("HYRCON READY");
         writer.newLine();
         writer.write(
@@ -259,8 +414,10 @@ public final class HyRconServer implements AutoCloseable {
         writer.flush();
     }
 
-    private boolean processAuthentication(String command, BufferedWriter writer)
-        throws IOException {
+    private boolean processLegacyAuthentication(
+        String command,
+        BufferedWriter writer
+    ) throws IOException {
         if (!command.regionMatches(true, 0, "AUTH", 0, 4)) {
             writer.write("ERR Not authenticated");
             writer.newLine();
@@ -272,59 +429,55 @@ public final class HyRconServer implements AutoCloseable {
 
         String candidate =
             command.length() > 4 ? command.substring(4).trim() : "";
-        boolean success = requiredPassword.map(candidate::equals).orElse(false);
+        boolean success = requiredPassword.map(candidate::equals).orElse(true);
 
-        if (success) {
-            writer.write("AUTH OK");
-        } else {
-            writer.write("AUTH FAIL");
-        }
+        writer.write(success ? "AUTH OK" : "AUTH FAIL");
         writer.newLine();
         writer.write(".");
         writer.newLine();
         writer.flush();
 
         if (!success) {
-            LOGGER.atInfo().log("HyRCON authentication failed");
+            LOGGER.atInfo().log(
+                "HyRCON[%s] authentication failed",
+                protocol.configToken()
+            );
         }
 
         return success;
     }
 
-    private void executeCommand(String command, BufferedWriter writer)
+    private void executeLegacyCommand(String command, BufferedWriter writer)
         throws IOException {
+        CommandResponse response = executeCommand(command);
+        sendLegacyResponse(writer, response, command);
+    }
+
+    private CommandResponse executeCommand(String command) {
         try {
-            CommandResponse response = commandExecutor.executeValidated(
-                command
-            );
-            sendResponse(writer, response);
+            return commandExecutor.executeValidated(command);
         } catch (RuntimeException ex) {
             LOGGER.atInfo().log(
                 "Exception while executing command \"%s\": %s",
                 command,
                 ex.toString()
             );
-            sendResponse(
-                writer,
-                CommandResponse.failure(
-                    "Command execution failed: " + ex.getMessage()
-                )
+            return CommandResponse.failure(
+                "Command execution failed: " + ex.getMessage()
             );
         }
     }
 
-    private void sendResponse(BufferedWriter writer, CommandResponse response)
-        throws IOException {
+    private void sendLegacyResponse(
+        BufferedWriter writer,
+        CommandResponse response,
+        String command
+    ) throws IOException {
         writer.write(response.isSuccess() ? "OK" : "ERR");
         writer.newLine();
 
-        for (String line : response.lines()) {
+        for (String line : toDisplayLines(command, response, true)) {
             writer.write(line);
-            writer.newLine();
-        }
-
-        if (response.isFailure() && response.hasErrorMessage()) {
-            writer.write("ERROR " + response.errorMessage());
             writer.newLine();
         }
 
@@ -333,13 +486,170 @@ public final class HyRconServer implements AutoCloseable {
         writer.flush();
     }
 
-    private void sendAndFlush(BufferedWriter writer, String line)
+    private void sendLegacyAndFlush(BufferedWriter writer, String line)
         throws IOException {
         writer.write(line);
         writer.newLine();
         writer.write(".");
         writer.newLine();
         writer.flush();
+    }
+
+    private void sendSourceResponse(
+        OutputStream output,
+        int requestId,
+        String command,
+        CommandResponse response
+    ) throws IOException {
+        List<String> lines = toDisplayLines(command, response, false);
+        String payload = String.join("\n", lines);
+        byte[] data = payload.getBytes(SOURCE_CHARSET);
+
+        if (data.length == 0) {
+            writeSourcePacket(output, requestId, 0, EMPTY_BYTES, 0, 0);
+            writeSourcePacket(output, requestId, 0, EMPTY_BYTES, 0, 0);
+            output.flush();
+            return;
+        }
+
+        int offset = 0;
+        while (offset < data.length) {
+            int chunk = Math.min(SOURCE_MAX_PAYLOAD, data.length - offset);
+            writeSourcePacket(output, requestId, 0, data, offset, chunk);
+            offset += chunk;
+        }
+
+        writeSourcePacket(output, requestId, 0, EMPTY_BYTES, 0, 0);
+        output.flush();
+    }
+
+    private SourceRconPacket readSourcePacket(InputStream input)
+        throws IOException {
+        Integer lengthValue = readLittleEndianInt(input);
+        if (lengthValue == null) {
+            return null;
+        }
+
+        int length = lengthValue;
+        if (length < 10) {
+            throw new IOException("Invalid RCON packet length: " + length);
+        }
+
+        byte[] buffer = new byte[length];
+        readFully(input, buffer, 0, length);
+
+        int requestId = decodeLittleEndianInt(buffer, 0);
+        int type = decodeLittleEndianInt(buffer, 4);
+        int payloadLength = length - 8;
+        int stringLength = Math.max(0, payloadLength - 2);
+
+        String payload =
+            stringLength == 0
+                ? ""
+                : new String(buffer, 8, stringLength, SOURCE_CHARSET);
+
+        return new SourceRconPacket(requestId, type, payload);
+    }
+
+    private static Integer readLittleEndianInt(InputStream input)
+        throws IOException {
+        int b0 = input.read();
+        if (b0 == -1) {
+            return null;
+        }
+        int b1 = input.read();
+        int b2 = input.read();
+        int b3 = input.read();
+        if ((b1 | b2 | b3) < 0) {
+            throw new EOFException(
+                "Unexpected end of stream while reading 32-bit integer"
+            );
+        }
+        return (
+            (b0 & 0xFF) |
+            ((b1 & 0xFF) << 8) |
+            ((b2 & 0xFF) << 16) |
+            ((b3 & 0xFF) << 24)
+        );
+    }
+
+    private static void readFully(
+        InputStream input,
+        byte[] buffer,
+        int offset,
+        int length
+    ) throws IOException {
+        int remaining = length;
+        while (remaining > 0) {
+            int read = input.read(buffer, offset, remaining);
+            if (read == -1) {
+                throw new EOFException(
+                    "Unexpected end of stream while reading RCON packet body"
+                );
+            }
+            offset += read;
+            remaining -= read;
+        }
+    }
+
+    private void writeSourcePacket(
+        OutputStream output,
+        int requestId,
+        int type,
+        byte[] payload,
+        int offset,
+        int length
+    ) throws IOException {
+        int bodyLength = 4 + 4 + length + 2;
+        writeLittleEndianInt(output, bodyLength);
+        writeLittleEndianInt(output, requestId);
+        writeLittleEndianInt(output, type);
+        if (length > 0) {
+            output.write(payload, offset, length);
+        }
+        output.write(0);
+        output.write(0);
+    }
+
+    private static void writeLittleEndianInt(OutputStream output, int value)
+        throws IOException {
+        output.write(value & 0xFF);
+        output.write((value >>> 8) & 0xFF);
+        output.write((value >>> 16) & 0xFF);
+        output.write((value >>> 24) & 0xFF);
+    }
+
+    private static int decodeLittleEndianInt(byte[] buffer, int offset) {
+        return (
+            (buffer[offset] & 0xFF) |
+            ((buffer[offset + 1] & 0xFF) << 8) |
+            ((buffer[offset + 2] & 0xFF) << 16) |
+            ((buffer[offset + 3] & 0xFF) << 24)
+        );
+    }
+
+    private List<String> toDisplayLines(
+        String command,
+        CommandResponse response,
+        boolean includeSyntheticSuccess
+    ) {
+        List<String> lines = new ArrayList<>(response.lines());
+
+        if (response.isFailure()) {
+            if (response.hasErrorMessage()) {
+                String errorLine = "ERROR " + response.errorMessage();
+                if (!lines.contains(errorLine)) {
+                    lines.add(errorLine);
+                }
+            }
+            if (lines.isEmpty()) {
+                lines.add("Command execution failed");
+            }
+        } else if (lines.isEmpty() && includeSyntheticSuccess) {
+            lines.add("Command executed: " + command);
+        }
+
+        return lines;
     }
 
     private static boolean isTerminateCommand(String command) {
@@ -404,4 +714,6 @@ public final class HyRconServer implements AutoCloseable {
         };
         return Executors.newCachedThreadPool(factory);
     }
+
+    private record SourceRconPacket(int requestId, int type, String payload) {}
 }
