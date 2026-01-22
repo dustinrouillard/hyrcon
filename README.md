@@ -1,4 +1,4 @@
-# Hytale HyRCON Mod
+# HyRCON Mod
 
 This mod runs a TCP server that listens for commands from external HyRCON clients to run in the server console, allowing easier commands in headless containerized deployments.
 
@@ -9,15 +9,15 @@ When you first add the mod to your server and start it, a new directory will get
 This plugin can also read configuration elements directly from the process environment variables for use in things like docker, you can configure this mod with the following variables at server startup.
 
 - `HYRCON_ENABLED` / `RCON_ENABLED`: Enables or disables the HyRCON server. Defaults to `true`.
-- `HYRCON_BIND` / `RCON_BIND`: Optional combined bind address in `host:port` (or `[ipv6]:port`) form. Defaults to `0.0.0.0:5522`.
+- `HYRCON_BIND` / `RCON_BIND`: Optional combined bind address in `host:port` (or `[ipv6]:port`) form. Defaults to `0.0.0.0:25575`.
 - `HYRCON_HOST` / `RCON_HOST`: Host fallback when no bind address is set. Defaults to `0.0.0.0`.
-- `HYRCON_PORT` / `RCON_PORT`: Port fallback when no bind address is set. Defaults to `5522`.
-- `HYRCON_PROTOCOL` / `RCON_PROTOCOL`: Chooses the remote console protocol to expose. Use `hyrcon` for the legacy line-based protocol or `source` for Source-compatible RCON. Defaults to `hyrcon` for now.
+- `HYRCON_PORT` / `RCON_PORT`: Port fallback when no bind address is set. Defaults to `25575`.
+- `HYRCON_PROTOCOL` / `RCON_PROTOCOL`: Chooses the remote console protocol to expose. Use `hyrcon` for the legacy line-based protocol or `source` for Source-compatible RCON. Defaults to `source`.
 - `HYRCON_PASSWORD` / `RCON_PASSWORD`: Password required for client authentication. Defaults to `changeme`.
 
 ## Connecting to the HyRCON Server
 
-We've created a simple Rust client that can be used to connect to the HyRCON server, which you can download from [here](https://github.com/dustinrouillard/hyrcon-client/releases).
+I created a simple Rust client that can be used to connect to the HyRCON server, which you can download from [here](https://github.com/dustinrouillard/hyrcon-client/releases), but any tools that can connect to a Source-compatible RCON server should work, if you come across any issues please open an issue on the GitHub repository.
 
 ## Running your server in Docker
 

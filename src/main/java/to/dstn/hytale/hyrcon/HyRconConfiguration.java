@@ -44,8 +44,9 @@ public final class HyRconConfiguration {
 
     public static final boolean DEFAULT_ENABLED = false;
     public static final String DEFAULT_HOST = "0.0.0.0";
-    public static final int DEFAULT_PORT = 5522;
-    public static final HyRconProtocol DEFAULT_PROTOCOL = HyRconProtocol.HYRCON;
+    public static final int DEFAULT_PORT = 25575;
+    public static final HyRconProtocol DEFAULT_PROTOCOL =
+        HyRconProtocol.SOURCE_RCON;
 
     private final boolean enabled;
     private final String host;

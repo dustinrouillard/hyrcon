@@ -17,7 +17,7 @@ public enum HyRconProtocol {
      * terminated by newlines and optionally authenticate with the {@code AUTH}
      * verb.
      */
-    HYRCON("hyrcon", HyRconConfiguration.DEFAULT_PORT, false),
+    HYRCON("hyrcon", 5522, false),
 
     /**
      * Source RCON protocol compatible with Valve's specification.
@@ -73,8 +73,8 @@ public enum HyRconProtocol {
 
     /**
      * Attempts to resolve a protocol from a user-supplied token. Comparison is
-     * case-insensitive and falls back to the legacy HyRCON protocol if the
-     * input is {@code null}.
+     * case-insensitive and falls back to the Source-compatible protocol if the
+     * input is {@code null} or blank.
      *
      * @param rawToken candidate token
      * @return matching protocol, never {@code null}
@@ -82,7 +82,7 @@ public enum HyRconProtocol {
      */
     public static HyRconProtocol fromToken(String rawToken) {
         if (rawToken == null || rawToken.isBlank()) {
-            return HYRCON;
+            return SOURCE_RCON;
         }
 
         String normalized = normalize(rawToken);
