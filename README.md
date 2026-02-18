@@ -1,6 +1,8 @@
 # HyRCON Mod
 
-This mod runs a TCP server that listens for commands from external HyRCON clients to run in the server console, allowing easier commands in headless containerized deployments.
+This mod runs a TCP server that listens for commands from external HyRCON/Source RCON clients to run in the server console, allowing easier commands in headless containerized deployments.
+
+[![Creator Code Support Banner](https://files.dstn.to/3e7b93579c732922.png)](https://store.hytale.com/)
 
 ## Configuration
 
