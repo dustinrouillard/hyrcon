@@ -122,8 +122,8 @@ public final class DispatcherCommandExecutor implements CommandExecutor {
         }
 
         @Override
-        public String getDisplayName() {
-            return delegate.getDisplayName();
+        public String getUsername() {
+            return delegate.getUsername();
         }
 
         @Override
